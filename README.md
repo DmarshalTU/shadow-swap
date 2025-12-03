@@ -42,27 +42,71 @@ Trap your opponent by getting them near your shadow **3 times** to win!
 
 ## 🚀 Getting Started
 
-### Prerequisites
+### Option 1: Download Pre-built Executables (Recommended)
+
+Download the latest release from the [Releases page](https://github.com/DmarshalTU/shadow-swap/releases):
+
+- **Windows**: `shadow-swap-windows-x86_64.tar.gz`
+- **Linux**: `shadow-swap-linux-x86_64.tar.gz`
+- **macOS (Intel)**: `shadow-swap-macos-x86_64.tar.gz`
+- **macOS (Apple Silicon)**: `shadow-swap-macos-arm64.tar.gz`
+
+Extract the archive and run the executable:
+```bash
+# Linux/macOS
+tar -xzf shadow-swap-*.tar.gz
+./shadow-swap
+
+# Windows
+# Extract the .tar.gz file (use 7-Zip or similar)
+# Run shadow-swap.exe
+```
+
+### Option 2: Build from Source
+
+#### Prerequisites
 
 - Rust 1.91.0 or later
 - Cargo (comes with Rust)
+- System dependencies (see below)
 
-### Installation
+#### Installation
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/shadow-swap.git
+git clone https://github.com/DmarshalTU/shadow-swap.git
 cd shadow-swap
 ```
 
-2. Build the project:
+2. Install system dependencies:
+
+**Linux:**
+```bash
+sudo apt-get install libasound2-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev libxcursor-dev libxinerama-dev
+```
+
+**macOS:**
+```bash
+# Dependencies are usually pre-installed
+```
+
+**Windows:**
+```bash
+# Dependencies are usually pre-installed
+```
+
+3. Build the project:
 ```bash
 cargo build --release
 ```
 
-3. Run the game:
+4. Run the game:
 ```bash
-cargo run --release
+# Linux/macOS
+./target/release/rayq
+
+# Windows
+target\release\rayq.exe
 ```
 
 ### Running a Multiplayer Game
