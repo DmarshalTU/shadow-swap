@@ -179,8 +179,12 @@ impl GameState {
                                     self.players[pid].is_trapped = player.is_trapped;
                                 }
                             } else if pid == self.player_id as usize {
-                                // This is about us - apply everything (opponent is controlling us)
-                                self.players[pid] = player;
+                                // This is about us - apply everything (opponent is controlling us or we swapped)
+                                // Apply position and shadow from network (they might have swapped or be controlling us)
+                                self.players[pid].pos = player.pos;
+                                self.players[pid].shadow_pos = player.shadow_pos;
+                                self.players[pid].score = player.score;
+                                self.players[pid].is_trapped = player.is_trapped;
                             }
                         }
                         Message::InverseControl { active, time_left } => {
@@ -191,6 +195,9 @@ impl GameState {
                             let pid = player_id as usize;
                             self.players[pid].is_trapped = true;
                             self.players[pid].score += 1;
+                            // Also update network state
+                            self.network_players[pid].is_trapped = true;
+                            self.network_players[pid].score = self.players[pid].score;
                             self.trap_flash_timer[pid] = 1.0;
                         }
                         Message::GameReset => {
@@ -296,11 +303,14 @@ impl GameState {
     }
 
     fn swap_with_shadow(&mut self) {
-        let player = &mut self.players[self.player_id as usize];
+        let pid = self.player_id as usize;
+        let player = &mut self.players[pid];
         std::mem::swap(&mut player.pos, &mut player.shadow_pos);
-        // Also update network state
-        let network_player = &mut self.network_players[self.player_id as usize];
+        // Also update network state immediately
+        let network_player = &mut self.network_players[pid];
         std::mem::swap(&mut network_player.pos, &mut network_player.shadow_pos);
+        // Send update immediately to sync the swap
+        self.send_message(Message::PlayerUpdate(self.network_players[pid]));
     }
 
     fn reset_game(&mut self) {
@@ -349,8 +359,13 @@ impl GameState {
             if dist < TRAP_RADIUS && !self.players[i].is_trapped {
                 self.players[i].is_trapped = true;
                 self.players[i].score += 1; // Positive score = times trapped (bad!)
+                // Update network state too
+                self.network_players[i].is_trapped = true;
+                self.network_players[i].score = self.players[i].score;
                 self.trap_flash_timer[i] = 1.0; // Flash for 1 second
                 self.send_message(Message::TrapEvent { player_id: i as u8 });
+                // Send full player update to sync score
+                self.send_message(Message::PlayerUpdate(self.network_players[i]));
             }
             
             // Reset trap after a moment
@@ -453,8 +468,12 @@ fn main() {
             game.swap_with_shadow();
         }
         
-        // Keep our own network state in sync
-        game.network_players[game.player_id as usize] = game.players[game.player_id as usize];
+        // Keep our own network state in sync (but preserve score from network - it's authoritative)
+        let pid = game.player_id as usize;
+        game.network_players[pid].pos = game.players[pid].pos;
+        game.network_players[pid].shadow_pos = game.players[pid].shadow_pos;
+        game.network_players[pid].is_trapped = game.players[pid].is_trapped;
+        // Score comes from network (host is authoritative for traps)
 
         // Restart game (R key) - only when game is over
         let is_game_over = game.players[0].score >= WIN_SCORE || game.players[1].score >= WIN_SCORE;
