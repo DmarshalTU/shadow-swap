@@ -61,6 +61,9 @@ struct GameState {
     inverse_cooldown: f32,
     trap_flash_timer: [f32; 2], // Visual feedback when trapped
     game_time: f32, // For visual effects
+    // Interpolation state
+    last_network_update: [Instant; 2], // Last time we received update for each player
+    network_players: [Player; 2], // Networked player state
 }
 
 impl GameState {
@@ -93,6 +96,23 @@ impl GameState {
             inverse_cooldown: 0.0,
             trap_flash_timer: [0.0, 0.0],
             game_time: 0.0,
+            last_network_update: [Instant::now(), Instant::now()],
+            network_players: [
+                Player {
+                    id: 0,
+                    pos: Vec2 { x: SCREEN_WIDTH as f32 * 0.3, y: SCREEN_HEIGHT as f32 / 2.0 },
+                    shadow_pos: Vec2 { x: SCREEN_WIDTH as f32 * 0.3, y: SCREEN_HEIGHT as f32 / 2.0 + 100.0 },
+                    score: 0,
+                    is_trapped: false,
+                },
+                Player {
+                    id: 1,
+                    pos: Vec2 { x: SCREEN_WIDTH as f32 * 0.7, y: SCREEN_HEIGHT as f32 / 2.0 },
+                    shadow_pos: Vec2 { x: SCREEN_WIDTH as f32 * 0.7, y: SCREEN_HEIGHT as f32 / 2.0 - 100.0 },
+                    score: 0,
+                    is_trapped: false,
+                },
+            ],
         }
     }
 
@@ -136,8 +156,15 @@ impl GameState {
                 if let Ok(msg) = bincode::deserialize::<Message>(&buf[..size]) {
                     match msg {
                         Message::PlayerUpdate(player) => {
-                            // Always update the player data we receive
-                            self.players[player.id as usize] = player;
+                            // Update network state and timestamp
+                            let pid = player.id as usize;
+                            self.network_players[pid] = player;
+                            self.last_network_update[pid] = Instant::now();
+                            
+                            // Immediately update for non-controlled players (smooth interpolation)
+                            if pid != self.player_id as usize {
+                                self.players[pid] = player;
+                            }
                         }
                         Message::InverseControl { active, time_left } => {
                             self.inverse_active = active;
@@ -191,7 +218,7 @@ impl GameState {
         let controlling_shadow = !self.inverse_active;
         
         if controlling_shadow {
-            // Control other player's shadow
+            // Control other player's shadow (client-side prediction)
             let target = &mut self.players[other_id].shadow_pos;
             target.x += input.x * PLAYER_SPEED * dt;
             target.y += input.y * PLAYER_SPEED * dt;
@@ -199,6 +226,9 @@ impl GameState {
             // Keep shadow in bounds
             target.x = target.x.max(PLAYER_SIZE).min(SCREEN_WIDTH as f32 - PLAYER_SIZE);
             target.y = target.y.max(PLAYER_SIZE).min(SCREEN_HEIGHT as f32 - PLAYER_SIZE);
+            
+            // Also update network state for sending
+            self.network_players[other_id].shadow_pos = *target;
         } else {
             // Control other player's actual character (INVERSE MODE!)
             let target = &mut self.players[other_id].pos;
@@ -208,12 +238,72 @@ impl GameState {
             // Keep in bounds
             target.x = target.x.max(PLAYER_SIZE).min(SCREEN_WIDTH as f32 - PLAYER_SIZE);
             target.y = target.y.max(PLAYER_SIZE).min(SCREEN_HEIGHT as f32 - PLAYER_SIZE);
+            
+            // Also update network state for sending
+            self.network_players[other_id].pos = *target;
+        }
+    }
+    
+    fn interpolate_players(&mut self, dt: f32) {
+        // Smooth interpolation for network updates
+        const INTERPOLATION_SPEED: f32 = 10.0; // How fast to catch up to network state
+        
+        for i in 0..2 {
+            if i == self.player_id as usize {
+                continue; // Don't interpolate our own character (we control it)
+            }
+            
+            // Check if we have recent network updates
+            let time_since_update = self.last_network_update[i].elapsed().as_secs_f32();
+            if time_since_update > 0.1 {
+                // No recent updates, use network state directly
+                self.players[i] = self.network_players[i];
+            } else {
+                // Interpolate towards network state
+                let network = &self.network_players[i];
+                let current = &mut self.players[i];
+                
+                // Interpolate position
+                let dx = network.pos.x - current.pos.x;
+                let dy = network.pos.y - current.pos.y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist > 0.1 {
+                    let move_dist = INTERPOLATION_SPEED * dt;
+                    if dist > move_dist {
+                        current.pos.x += (dx / dist) * move_dist;
+                        current.pos.y += (dy / dist) * move_dist;
+                    } else {
+                        current.pos = network.pos;
+                    }
+                }
+                
+                // Interpolate shadow position
+                let sdx = network.shadow_pos.x - current.shadow_pos.x;
+                let sdy = network.shadow_pos.y - current.shadow_pos.y;
+                let sdist = (sdx * sdx + sdy * sdy).sqrt();
+                if sdist > 0.1 {
+                    let move_dist = INTERPOLATION_SPEED * dt;
+                    if sdist > move_dist {
+                        current.shadow_pos.x += (sdx / sdist) * move_dist;
+                        current.shadow_pos.y += (sdy / sdist) * move_dist;
+                    } else {
+                        current.shadow_pos = network.shadow_pos;
+                    }
+                }
+                
+                // Sync other properties immediately
+                current.score = network.score;
+                current.is_trapped = network.is_trapped;
+            }
         }
     }
 
     fn swap_with_shadow(&mut self) {
         let player = &mut self.players[self.player_id as usize];
         std::mem::swap(&mut player.pos, &mut player.shadow_pos);
+        // Also update network state
+        let network_player = &mut self.network_players[self.player_id as usize];
+        std::mem::swap(&mut network_player.pos, &mut network_player.shadow_pos);
     }
 
     fn reset_game(&mut self) {
@@ -341,7 +431,7 @@ fn main() {
         let dt = last_frame.elapsed().as_secs_f32();
         last_frame = Instant::now();
 
-        // Network receive
+        // Network receive (do this first for lowest latency)
         game.receive_messages();
 
         // Update game time for visual effects
@@ -349,6 +439,9 @@ fn main() {
 
         // Update inverse timer (host only)
         game.update_inverse_timer(dt);
+        
+        // Interpolate network updates for smooth movement
+        game.interpolate_players(dt);
 
         // Get input
         let input = get_input(&rl);
@@ -362,6 +455,9 @@ fn main() {
         if rl.is_key_pressed(KeyboardKey::KEY_SPACE) {
             game.swap_with_shadow();
         }
+        
+        // Keep our own network state in sync
+        game.network_players[game.player_id as usize] = game.players[game.player_id as usize];
 
         // Restart game (R key) - only when game is over
         let is_game_over = game.players[0].score >= WIN_SCORE || game.players[1].score >= WIN_SCORE;
@@ -373,14 +469,14 @@ fn main() {
         // Check traps (host only)
         game.check_traps(dt);
 
-        // Send updates
-        if game.last_send.elapsed().as_millis() > 16 {
-            // Always send our own player update
-            game.send_message(Message::PlayerUpdate(game.players[game.player_id as usize]));
+        // Send updates more frequently for better sync (every 8ms = ~125fps)
+        if game.last_send.elapsed().as_millis() >= 8 {
+            // Always send our own player update (use network state which includes our controlled changes)
+            game.send_message(Message::PlayerUpdate(game.network_players[game.player_id as usize]));
             
             // If we're controlling the opponent's shadow/character, send their update too
             let other_id = (1 - game.player_id as usize) as usize;
-            game.send_message(Message::PlayerUpdate(game.players[other_id]));
+            game.send_message(Message::PlayerUpdate(game.network_players[other_id]));
             
             if game.is_host {
                 game.send_message(Message::InverseControl { 
