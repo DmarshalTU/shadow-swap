@@ -161,10 +161,8 @@ impl GameState {
                             self.network_players[pid] = player;
                             self.last_network_update[pid] = Instant::now();
                             
-                            // Immediately update for non-controlled players (smooth interpolation)
-                            if pid != self.player_id as usize {
-                                self.players[pid] = player;
-                            }
+                            // Don't immediately overwrite what we're controlling
+                            // Interpolation will handle it smoothly
                         }
                         Message::InverseControl { active, time_left } => {
                             self.inverse_active = active;
@@ -246,17 +244,58 @@ impl GameState {
     
     fn interpolate_players(&mut self, dt: f32) {
         // Smooth interpolation for network updates
-        const INTERPOLATION_SPEED: f32 = 10.0; // How fast to catch up to network state
+        const INTERPOLATION_SPEED: f32 = 20.0; // How fast to catch up to network state
+        let other_id = (1 - self.player_id as usize) as usize;
+        let controlling_shadow = !self.inverse_active;
         
         for i in 0..2 {
             if i == self.player_id as usize {
-                continue; // Don't interpolate our own character (we control it)
+                // Don't interpolate our own character - we control it directly
+                continue;
             }
             
-            // Check if we have recent network updates
+            // Determine what we're controlling
+            let controlling_opponent_shadow = controlling_shadow && i == other_id;
+            let controlling_opponent_char = !controlling_shadow && i == other_id;
+            
+            if controlling_opponent_shadow {
+                // We're controlling opponent's shadow - use our local state, don't interpolate
+                // Just sync non-position properties from network
+                self.players[i].score = self.network_players[i].score;
+                self.players[i].is_trapped = self.network_players[i].is_trapped;
+                // Position and shadow_pos are controlled locally, don't touch them
+                continue;
+            }
+            
+            if controlling_opponent_char {
+                // We're controlling opponent's character - use our local state, don't interpolate
+                // Just sync non-position properties from network
+                self.players[i].score = self.network_players[i].score;
+                self.players[i].is_trapped = self.network_players[i].is_trapped;
+                // Position is controlled locally, but shadow can be interpolated
+                let network = &self.network_players[i];
+                let current = &mut self.players[i];
+                
+                // Interpolate shadow position only
+                let sdx = network.shadow_pos.x - current.shadow_pos.x;
+                let sdy = network.shadow_pos.y - current.shadow_pos.y;
+                let sdist = (sdx * sdx + sdy * sdy).sqrt();
+                if sdist > 0.1 {
+                    let move_dist = INTERPOLATION_SPEED * dt;
+                    if sdist > move_dist {
+                        current.shadow_pos.x += (sdx / sdist) * move_dist;
+                        current.shadow_pos.y += (sdy / sdist) * move_dist;
+                    } else {
+                        current.shadow_pos = network.shadow_pos;
+                    }
+                }
+                continue;
+            }
+            
+            // For things we're NOT controlling, interpolate from network
             let time_since_update = self.last_network_update[i].elapsed().as_secs_f32();
-            if time_since_update > 0.1 {
-                // No recent updates, use network state directly
+            if time_since_update > 0.2 {
+                // No recent updates, snap to network state
                 self.players[i] = self.network_players[i];
             } else {
                 // Interpolate towards network state
