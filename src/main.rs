@@ -161,8 +161,27 @@ impl GameState {
                             self.network_players[pid] = player;
                             self.last_network_update[pid] = Instant::now();
                             
-                            // Don't immediately overwrite what we're controlling
-                            // Interpolation will handle it smoothly
+                            // Immediately apply updates for things we're NOT controlling
+                            let other_id = (1 - self.player_id as usize) as usize;
+                            let controlling_shadow = !self.inverse_active;
+                            
+                            // If this is about the opponent, and we're NOT controlling them, apply immediately
+                            if pid == other_id {
+                                if controlling_shadow {
+                                    // We control their shadow, so only update their position (not shadow)
+                                    self.players[pid].pos = player.pos;
+                                    self.players[pid].score = player.score;
+                                    self.players[pid].is_trapped = player.is_trapped;
+                                } else {
+                                    // We control their character, so only update their shadow (not position)
+                                    self.players[pid].shadow_pos = player.shadow_pos;
+                                    self.players[pid].score = player.score;
+                                    self.players[pid].is_trapped = player.is_trapped;
+                                }
+                            } else if pid == self.player_id as usize {
+                                // This is about us - apply everything (opponent is controlling us)
+                                self.players[pid] = player;
+                            }
                         }
                         Message::InverseControl { active, time_left } => {
                             self.inverse_active = active;
@@ -242,95 +261,34 @@ impl GameState {
         }
     }
     
-    fn interpolate_players(&mut self, dt: f32) {
-        // Smooth interpolation for network updates
-        const INTERPOLATION_SPEED: f32 = 20.0; // How fast to catch up to network state
-        let other_id = (1 - self.player_id as usize) as usize;
+    fn interpolate_players(&mut self, _dt: f32) {
+        // Apply network updates immediately - no interpolation needed for real-time sync
         let controlling_shadow = !self.inverse_active;
         
         for i in 0..2 {
             if i == self.player_id as usize {
-                // Don't interpolate our own character - we control it directly
-                continue;
-            }
-            
-            // Determine what we're controlling
-            let controlling_opponent_shadow = controlling_shadow && i == other_id;
-            let controlling_opponent_char = !controlling_shadow && i == other_id;
-            
-            if controlling_opponent_shadow {
-                // We're controlling opponent's shadow - use our local state, don't interpolate
-                // Just sync non-position properties from network
+                // Our own character - just sync non-position properties
                 self.players[i].score = self.network_players[i].score;
                 self.players[i].is_trapped = self.network_players[i].is_trapped;
-                // Position and shadow_pos are controlled locally, don't touch them
                 continue;
             }
             
-            if controlling_opponent_char {
-                // We're controlling opponent's character - use our local state, don't interpolate
-                // Just sync non-position properties from network
-                self.players[i].score = self.network_players[i].score;
-                self.players[i].is_trapped = self.network_players[i].is_trapped;
-                // Position is controlled locally, but shadow can be interpolated
-                let network = &self.network_players[i];
-                let current = &mut self.players[i];
-                
-                // Interpolate shadow position only
-                let sdx = network.shadow_pos.x - current.shadow_pos.x;
-                let sdy = network.shadow_pos.y - current.shadow_pos.y;
-                let sdist = (sdx * sdx + sdy * sdy).sqrt();
-                if sdist > 0.1 {
-                    let move_dist = INTERPOLATION_SPEED * dt;
-                    if sdist > move_dist {
-                        current.shadow_pos.x += (sdx / sdist) * move_dist;
-                        current.shadow_pos.y += (sdy / sdist) * move_dist;
-                    } else {
-                        current.shadow_pos = network.shadow_pos;
-                    }
-                }
-                continue;
-            }
+            // For opponent: apply network updates immediately
+            let network = &self.network_players[i];
+            let current = &mut self.players[i];
             
-            // For things we're NOT controlling, interpolate from network
-            let time_since_update = self.last_network_update[i].elapsed().as_secs_f32();
-            if time_since_update > 0.2 {
-                // No recent updates, snap to network state
-                self.players[i] = self.network_players[i];
+            if controlling_shadow {
+                // We control their shadow - network updates their position (they control their character)
+                // Apply position updates immediately
+                current.pos = network.pos;
+                // Shadow is controlled by us locally, don't touch
+                current.score = network.score;
+                current.is_trapped = network.is_trapped;
             } else {
-                // Interpolate towards network state
-                let network = &self.network_players[i];
-                let current = &mut self.players[i];
-                
-                // Interpolate position
-                let dx = network.pos.x - current.pos.x;
-                let dy = network.pos.y - current.pos.y;
-                let dist = (dx * dx + dy * dy).sqrt();
-                if dist > 0.1 {
-                    let move_dist = INTERPOLATION_SPEED * dt;
-                    if dist > move_dist {
-                        current.pos.x += (dx / dist) * move_dist;
-                        current.pos.y += (dy / dist) * move_dist;
-                    } else {
-                        current.pos = network.pos;
-                    }
-                }
-                
-                // Interpolate shadow position
-                let sdx = network.shadow_pos.x - current.shadow_pos.x;
-                let sdy = network.shadow_pos.y - current.shadow_pos.y;
-                let sdist = (sdx * sdx + sdy * sdy).sqrt();
-                if sdist > 0.1 {
-                    let move_dist = INTERPOLATION_SPEED * dt;
-                    if sdist > move_dist {
-                        current.shadow_pos.x += (sdx / sdist) * move_dist;
-                        current.shadow_pos.y += (sdy / sdist) * move_dist;
-                    } else {
-                        current.shadow_pos = network.shadow_pos;
-                    }
-                }
-                
-                // Sync other properties immediately
+                // We control their character - network updates their shadow (they control their shadow)
+                // Apply shadow updates immediately
+                current.shadow_pos = network.shadow_pos;
+                // Position is controlled by us locally, don't touch
                 current.score = network.score;
                 current.is_trapped = network.is_trapped;
             }
