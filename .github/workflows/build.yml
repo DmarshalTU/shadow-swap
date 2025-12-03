@@ -62,18 +62,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libglu1-mesa-dev libxcursor-dev libxinerama-dev
 
-      - name: Build release binary
+      - name: Build release binary (Unix)
+        if: matrix.os != 'windows-latest'
+        shell: bash
         run: |
           cargo build --release --target ${{ matrix.target }}
           mkdir -p release
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp target/${{ matrix.target }}/release/rayq.exe release/shadow-swap${{ matrix.extension }}
-          else
-            cp target/${{ matrix.target }}/release/rayq release/shadow-swap${{ matrix.extension }}
-          fi
+          cp target/${{ matrix.target }}/release/rayq release/shadow-swap${{ matrix.extension }}
 
-      - name: Create archive (Linux/Mac)
+      - name: Build release binary (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\rayq.exe" "release\shadow-swap${{ matrix.extension }}"
+
+      - name: Create archive (Unix)
         if: matrix.os != 'windows-latest'
+        shell: bash
         run: |
           cd release
           tar -czf ../${{ matrix.artifact_name }}.tar.gz shadow-swap${{ matrix.extension }}
@@ -81,6 +88,7 @@ jobs:
 
       - name: Create archive (Windows)
         if: matrix.os == 'windows-latest'
+        shell: pwsh
         run: |
           cd release
           tar -czf ../${{ matrix.artifact_name }}.tar.gz shadow-swap${{ matrix.extension }}
