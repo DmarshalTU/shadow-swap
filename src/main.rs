@@ -136,9 +136,8 @@ impl GameState {
                 if let Ok(msg) = bincode::deserialize::<Message>(&buf[..size]) {
                     match msg {
                         Message::PlayerUpdate(player) => {
-                            if player.id != self.player_id {
-                                self.players[player.id as usize] = player;
-                            }
+                            // Always update the player data we receive
+                            self.players[player.id as usize] = player;
                         }
                         Message::InverseControl { active, time_left } => {
                             self.inverse_active = active;
@@ -312,18 +311,22 @@ fn main() {
     let mut game = GameState::new(is_host);
 
     if is_host {
-        println!("Waiting for connection on port {}...", PORT);
+        println!("\nWaiting for connection on port {}...", PORT);
         game.connect("").unwrap();
-        println!("Connected! Waiting for player...");
-        std::thread::sleep(Duration::from_secs(2));
+        println!("Server started! Waiting for player to connect...");
+        println!("(Share your IP address with the other player)");
+        std::thread::sleep(Duration::from_secs(1));
     } else {
-        print!("Enter host IP (e.g., 127.0.0.1): ");
+        println!("\nEnter host IP address:");
+        println!("  - For local network: Enter the host's local IP (e.g., 192.168.1.31)");
+        println!("  - For same computer: Enter 127.0.0.1");
+        print!("\nHost IP: ");
         let mut addr = String::new();
         std::io::stdin().read_line(&mut addr).unwrap();
         let addr = format!("{}:{}", addr.trim(), PORT);
-        println!("Connecting to {}...", addr);
+        println!("\nConnecting to {}...", addr);
         game.connect(&addr).unwrap();
-        println!("Connected!");
+        println!("Connected! Starting game...");
     }
 
     let (mut rl, thread) = raylib::init()
@@ -372,7 +375,13 @@ fn main() {
 
         // Send updates
         if game.last_send.elapsed().as_millis() > 16 {
+            // Always send our own player update
             game.send_message(Message::PlayerUpdate(game.players[game.player_id as usize]));
+            
+            // If we're controlling the opponent's shadow/character, send their update too
+            let other_id = (1 - game.player_id as usize) as usize;
+            game.send_message(Message::PlayerUpdate(game.players[other_id]));
+            
             if game.is_host {
                 game.send_message(Message::InverseControl { 
                     active: game.inverse_active, 
